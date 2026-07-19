@@ -1,0 +1,14 @@
+{
+    "calva.replConnectSequences": [
+        {
+            "name": "nix develop bb",
+            "projectType": "babashka",
+            "customJackInCommandLine": "nix develop --command bash -c \"bb nrepl-server JACK-IN-NREPL-PORT\""
+        },
+        {
+            "name": "nix develop + .env + deps.edn",
+            "projectType": "deps.edn",
+            "customJackInCommandLine": "nix develop --command bash -c \"bin/calva-jack-in.bb JACK-IN-CLI-ALIASES JACK-IN-NREPL-VERSION JACK-IN-CIDER-NREPL-VERSION\""
+        },
+    ]
+}
