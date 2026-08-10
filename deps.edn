@@ -1,3 +1,4 @@
 {:paths ["src"]
  :deps {babashka/process {:mvn/version "0.6.25"}
-        metosin/jsonista {:mvn/version "1.0.0"}}}
+        metosin/jsonista {:mvn/version "1.0.0"}
+        metosin/malli {:mvn/version "0.20.1"}}}

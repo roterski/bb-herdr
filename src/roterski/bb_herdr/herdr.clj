@@ -1,27 +1,34 @@
 (ns roterski.bb-herdr.herdr
-  (:require [roterski.bb-herdr.utils :refer [join-lines]]
-            [babashka.process :as bp]
+  (:require [babashka.process :as bp]
             [jsonista.core :as j]
             [clojure.string :as str]))
+
+(def ^:dynamic *props* {:print-cmd? true})
 
 (defn herdr
   [& cmd]
   (let [cmd (str "herdr " (str/join " " cmd))
-        {:keys [exit out err]} (bp/sh cmd)
+        {:keys [extra-env print-cmd? print-output?]} *props*
+        {:keys [exit out err]} (bp/sh {:extra-env extra-env} cmd)
         success? (zero? exit)
         output (if success?
                  out
-                 err)]
-    (println "$" cmd)
-    (merge {:success? success?}
-           (try
-             (j/read-value output j/keyword-keys-object-mapper)
-             (catch Exception _e
-               (println out err)
-               {:result output})))))
+                 err)
+        parsed-output (merge {:success? success?}
+                             (try
+                               (j/read-value output j/keyword-keys-object-mapper)
+                               (catch Exception _e
+                                 (println out err)
+                                 {:result output})))]
+    (when print-cmd? (println "$" cmd))
+    (when print-output? (println ">" parsed-output))
+    parsed-output))
 
 (defn dir->pane-id
-  [dir]
+  {:malli/schema [:=>
+                  [:cat [:map [:dir :string]]]
+                  [:maybe :string]]}
+  [{:keys [dir]}]
   (->> (herdr "pane list")
        :result
        :panes
@@ -30,29 +37,52 @@
        first
        :pane_id))
 
+(defn ->workspace-label
+  {:malli/schema [:=>
+                  [:cat [:map
+                         [:label {:optional true} :string]
+                         [:workspace-label {:optional true} :string]]]
+                  :string]}
+  [{:keys [label workspace-label]}]
+  (or workspace-label label))
+
+(defn ->tab-label
+  {:malli/schema [:=>
+                  [:cat [:map
+                         [:label {:optional true} :string]
+                         [:agent-name {:optional true} :string]
+                         [:tab-label {:optional true} :string]]]
+                  :string]}
+  [{:keys [agent-name label tab-label]}]
+  (or tab-label agent-name label))
+
 (defn label->workspace-id
-  [workspace-label]
+  [props]
   (->> (herdr "workspace list")
        :result
        :workspaces
-       (filter #(= workspace-label (:label %)))
+       (filter #(= (->workspace-label props) (:label %)))
        first
        :workspace_id))
 
-(defn label->workspace-id!
-  [dir workspace-label]
-  (if-let [workspace-id (label->workspace-id workspace-label)]
+(defn ->workspace-id!
+  {:malli/schema [:=>
+                  [:cat [:map [:dir :string]]]
+                  :string]}
+  [{:keys [dir] :as props}]
+  (if-let [workspace-id (label->workspace-id props)]
     workspace-id
     (do (herdr "workspace create"
                "--cwd" dir
-               "--label" workspace-label)
-        (label->workspace-id workspace-label))))
+               "--label" (->workspace-label props))
+        (label->workspace-id props))))
 
 (defn tab->pane-id
-  [workspace-id tab-label]
-  (let [tab-id (->> (herdr "tab list --workspace" workspace-id)
+  [props]
+  (let [workspace-id (->workspace-id! props)
+        tab-id (->> (herdr "tab list --workspace" workspace-id)
                     :result :tabs
-                    (filter #(= tab-label (:label %)))
+                    (filter #(= (->tab-label props) (:label %)))
                     first
                     :tab_id)
         pane-id (->> (herdr "pane list --workspace" workspace-id)
@@ -63,31 +93,46 @@
     pane-id))
 
 (defn tab->pane-id!
-  [dir workspace-id tab-label]
-  (if-let [pane-id (tab->pane-id workspace-id tab-label)]
+  {:malli/schema [:=>
+                  [:cat [:map [:dir :string]]]
+                  :string]}
+  [{:keys [dir] :as props}]
+  (if-let [pane-id (tab->pane-id props)]
     pane-id
     (do (herdr "tab create"
-               "--workspace" workspace-id
+               "--workspace" (->workspace-id! props)
                "--cwd" dir
-               "--label" tab-label)
-        (tab->pane-id workspace-id tab-label))))
+               "--label" (->tab-label props)
+               "--focus")
+        (Thread/sleep 1000) ;; must wait for newly created panes to become responsive , TODO try to avoid blocking thread
+        (tab->pane-id props))))
 
 (defn agent-name->pane-id
-  [agent-name]
+  {:malli/schema [:=>
+                  [:cat [:map [:agent-name :string]]]
+                  [:maybe :string]]}
+  [{:keys [agent-name]}]
   (->> (herdr "agent" "get" agent-name)
        :result
        :agent
        :pane_id))
 
 (defn agent-name->pane-id!
-  [dir agent-name workspace-id]
-  (if-let [pane-id (agent-name->pane-id agent-name)]
+  {:malli/schema [:=>
+                  [:cat [:map
+                         [:agent-name :string]
+                         [:permission-mode [:enum "auto" "acceptEdits" "bypassPermissions" "manual" "dontAsk" "plan"]]]]
+                  :string]}
+  [{:keys [agent-name permission-mode] :as props}]
+  (if-let [pane-id (agent-name->pane-id props)]
     pane-id
-    (do (herdr "agent start" agent-name
-               "--workspace" workspace-id
-               "--cwd" dir
-               "--" "claude --permission-mode auto")
-        (agent-name->pane-id agent-name))))
+    (let [pane-id (tab->pane-id! props)]
+      (herdr "agent start" agent-name
+             "--pane" pane-id
+             "--kind" "claude"
+             "--"
+             "--permission-mode" permission-mode)
+      (agent-name->pane-id props))))
 
 (defn close-all
   []
@@ -97,39 +142,11 @@
        (run! (fn [{:keys [workspace_id]}]
                (herdr "workspace close" workspace_id)))))
 
-(defn ->input-prompt
-  [pane-id]
-  (->> (herdr "pane" "read" pane-id)
-       :result
-       str/split-lines
-       (drop-while (fn [line] (not (str/starts-with? line "────────────"))))
-       (drop 1)
-       (take-while (fn [line] (not (str/starts-with? line "────────────"))))))
-
-(defn ->blank-input-prompt?
-  [pane-id]
-  (-> (apply join-lines (->input-prompt pane-id))
-      (str/replace-first "❯" "")
-      str/trim
-      str/blank?))
-
-(defn ensure-prompt-sent!
-  [pane-id]
-  (loop [i 0]
-    (when (or (not (->blank-input-prompt? pane-id))
-              (< i 10))
-      (herdr "pane" "send-keys" pane-id "enter")
-      (Thread/sleep 100)
-      (recur (inc i)))))
-
-(defn pane-run!
-  [pane-id text]
-  (herdr "pane" "run" pane-id text)
-  (ensure-prompt-sent! pane-id))
-
 (defn agent-run!
-  [{:keys [dir agent-name label]} prompt]
-  (pane-run! (agent-name->pane-id! dir
-                                   agent-name
-                                   (label->workspace-id! dir label))
-             prompt))
+  {:malli/schema [:=>
+                  [:cat [:map [:agent-name :string]] :string]
+                  [:map]]}
+  [{:keys [agent-name] :as props} prompt]
+  (agent-name->pane-id! props)
+  (herdr "agent prompt" agent-name
+         (str "'" prompt "'")))
