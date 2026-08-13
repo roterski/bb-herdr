@@ -7,7 +7,11 @@
 
 (defn herdr
   [& cmd]
-  (let [cmd (str "herdr " (str/join " " cmd))
+  (let [cmd (->> cmd
+                 flatten
+                 (remove str/blank?)
+                 (str/join " ")
+                 (str "herdr "))
         {:keys [extra-env print-cmd? print-output?]} *props*
         {:keys [exit out err]} (bp/sh {:extra-env extra-env} cmd)
         success? (zero? exit)
@@ -121,9 +125,9 @@
   {:malli/schema [:=>
                   [:cat [:map
                          [:agent-name :string]
-                         [:permission-mode [:enum "auto" "acceptEdits" "bypassPermissions" "manual" "dontAsk" "plan"]]]]
+                         [:agent-opts {:optional true} :string]]]
                   :string]}
-  [{:keys [agent-name permission-mode] :as props}]
+  [{:keys [agent-name agent-opts] :as props}]
   (if-let [pane-id (agent-name->pane-id props)]
     pane-id
     (let [pane-id (tab->pane-id! props)]
@@ -131,7 +135,8 @@
              "--pane" pane-id
              "--kind" "claude"
              "--"
-             "--permission-mode" permission-mode)
+             (when agent-opts
+               agent-opts))
       (agent-name->pane-id props))))
 
 (defn close-all
