@@ -1,5 +1,6 @@
 (ns roterski.bb-herdr.herdr
-  (:require [babashka.process :as bp]
+  (:require [roterski.bb-herdr.utils :refer [join-lines]]
+            [babashka.process :as bp]
             [jsonista.core :as j]
             [clojure.string :as str]))
 
@@ -147,6 +148,31 @@
        (run! (fn [{:keys [workspace_id]}]
                (herdr "workspace close" workspace_id)))))
 
+(defn ->input-prompt
+  [text]
+  (->> text
+       str/split-lines
+       (drop-while (fn [line] (not (str/starts-with? line "────────────"))))
+       (drop 1)
+       (take-while (fn [line] (not (str/starts-with? line "────────────"))))))
+
+(defn ->blank-input-prompt?
+  [text]
+  (-> (apply join-lines (->input-prompt text))
+      (str/replace-first "❯" "")
+      str/trim
+      str/blank?))
+
+(defn ensure-agent-prompt-sent!
+  [agent-name]
+  (loop [i 0]
+    (let [{text :result} (herdr "agent read" agent-name)]
+      (when (or (not (->blank-input-prompt? text))
+                (< i 10))
+        (herdr "agent" "send-keys" agent-name "enter")
+        (Thread/sleep 100)
+        (recur (inc i))))))
+
 (defn agent-run!
   {:malli/schema [:=>
                   [:cat [:map [:agent-name :string]] :string]
@@ -154,4 +180,5 @@
   [{:keys [agent-name] :as props} prompt]
   (agent-name->pane-id! props)
   (herdr "agent prompt" agent-name
-         (str "'" prompt "'")))
+         (str "'" prompt "'"))
+  (ensure-agent-prompt-sent! agent-name))
