@@ -4,6 +4,7 @@
 (defn join-lines
   [& lines]
   (->> lines
+       (mapcat #(cond-> % (not (coll? %)) vector))
        (filter identity)
        (str/join "\n")))
 
@@ -20,4 +21,8 @@
               ""
               "world")
   ;;=> "hello\n\nworld"
+  (join-lines "hello"
+              "world"
+              ["lorem" "ipsum"])
+  ;;=> "hello\nworld\nlorem\nipsum"
   )
