@@ -2,7 +2,9 @@
   (:require [roterski.bb-herdr.utils :refer [join-lines]]
             [babashka.process :as bp]
             [jsonista.core :as j]
-            [clojure.string :as str]))
+            [clojure.string :as str]
+            [malli.core :as ma]
+            [malli.transform :as mt]))
 
 (def ^:dynamic *props* {:print-cmd? true})
 
@@ -122,23 +124,34 @@
        :agent
        :pane_id))
 
+(def AgentProps
+  [:map
+   [:agent-name :string]
+   [:agent-kind {:optional true
+                 :default "claude"} :string]
+   [:agent-opts {:optional true} :string]])
+
+(def coerce-agent-props
+  (ma/coercer AgentProps (mt/transformer
+                          mt/string-transformer
+                          (mt/default-value-transformer {::mt/add-optional-keys true}))))
+
 (defn agent-name->pane-id!
   {:malli/schema [:=>
-                  [:cat [:map
-                         [:agent-name :string]
-                         [:agent-opts {:optional true} :string]]]
+                  [:cat AgentProps]
                   :string]}
-  [{:keys [agent-name agent-opts] :as props}]
-  (if-let [pane-id (agent-name->pane-id props)]
-    pane-id
-    (let [pane-id (tab->pane-id! props)]
-      (herdr "agent start" agent-name
-             "--pane" pane-id
-             "--kind" "claude"
-             "--"
-             (when agent-opts
-               agent-opts))
-      (agent-name->pane-id props))))
+  [props]
+  (let [{:keys [agent-name agent-kind agent-opts] :as props} (coerce-agent-props props)]
+    (if-let [pane-id (agent-name->pane-id props)]
+      pane-id
+      (let [pane-id (tab->pane-id! props)]
+        (herdr "agent start" agent-name
+               "--pane"      pane-id
+               "--kind"      agent-kind
+               "--"
+               (when agent-opts
+                 agent-opts))
+        (agent-name->pane-id props)))))
 
 (defn close-all
   []
