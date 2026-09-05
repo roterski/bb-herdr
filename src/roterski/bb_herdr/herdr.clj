@@ -193,5 +193,5 @@
   [{:keys [agent-name] :as props} prompt]
   (agent-name->pane-id! props)
   (herdr "agent prompt" agent-name
-         (str "'" prompt "'"))
+         (pr-str prompt))
   (ensure-agent-prompt-sent! agent-name))
