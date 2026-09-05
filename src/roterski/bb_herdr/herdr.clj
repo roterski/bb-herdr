@@ -188,10 +188,14 @@
 
 (defn agent-run!
   {:malli/schema [:=>
-                  [:cat [:map [:agent-name :string]] :string]
+                  [:cat [:map
+                         [:agent-name :string]
+                         [:ensure-prompt-sent? {:optional true
+                                                :default false} :boolean]] :string]
                   [:map]]}
-  [{:keys [agent-name] :as props} prompt]
+  [{:keys [agent-name ensure-prompt-sent?] :as props} prompt]
   (agent-name->pane-id! props)
   (herdr "agent prompt" agent-name
          (pr-str prompt))
-  (ensure-agent-prompt-sent! agent-name))
+  (when ensure-prompt-sent?
+    (ensure-agent-prompt-sent! agent-name)))
