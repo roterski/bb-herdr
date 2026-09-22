@@ -9,13 +9,17 @@
 (def ^:dynamic *props* {:print-cmd? true})
 
 (defn herdr
-  [& cmd]
-  (let [cmd (->> cmd
+  [& args]
+  (let [[props cmds] (if (map? (first args))
+                       [(first args) (rest args)]
+                       [{} args])
+        cmd (->> cmds
                  flatten
                  (remove str/blank?)
                  (str/join " ")
                  (str "herdr "))
-        {:keys [extra-env print-cmd? print-output?]} *props*
+        {:keys [extra-env print-cmd? print-output?]} (merge *props*
+                                                            props)
         {:keys [exit out err]} (bp/sh {:extra-env extra-env} cmd)
         success? (zero? exit)
         output (if success?
