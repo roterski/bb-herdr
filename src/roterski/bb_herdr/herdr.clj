@@ -8,8 +8,10 @@
 
 (def ^:dynamic *props* {:print-cmd? true})
 
-(defn wrapped-sh [props args]
-  (let [{:keys [exit out err]} (bp/sh props args)
+(defn wrapped-sh
+  "Runs `argv` (a vector, passed to the process as-is) and parses its JSON output."
+  [props argv]
+  (let [{:keys [exit out err]} (apply bp/sh props argv)
         success? (zero? exit)
         output (if success?
                  out
@@ -21,19 +23,36 @@
                (println out err)
                {:result output})))))
 
+(defn cmds->herdr-args
+  "A single string is a command line, tokenized like a shell would (a leading
+     `herdr` is optional, so commands paste straight from the docs). Anything
+     else is argv: each element is one argument, never joined or tokenized, so
+     values may contain spaces and quotes. Nested sequences are spliced, nils dropped."
+  [cmds]
+  (if (and (= 1 (count cmds)) (string? (first cmds)))
+    (let [tokens (bp/tokenize (first cmds))]
+      (cond-> tokens (= "herdr" (first tokens)) rest))
+    (->> cmds flatten (remove nil?))))
+
+^:rct/test
+(comment
+  (cmds->herdr-args ["ls -lha path"])
+  ;;=> ["ls" "-lha" "path"]
+  (cmds->herdr-args ["ls" "-lha" "path"])
+  ;;=> ("ls" "-lha" "path")
+  )
+
 (defn herdr
+  "Runs herdr with the args described in `cmds->herdr-args`. An optional
+   leading map holds babashka.process opts plus :print-cmd?/:print-output?."
   [& args]
   (let [[props cmds] (if (map? (first args))
                        [(first args) (rest args)]
                        [{} args])
-        cmd (->> cmds
-                 flatten
-                 (remove str/blank?)
-                 (str/join " ")
-                 (str "herdr "))
+        argv (into ["herdr"] (cmds->herdr-args cmds))
         {:keys [print-cmd? print-output?]} (merge *props* props)
-        parsed-output (wrapped-sh props cmd)]
-    (when print-cmd? (println "$" cmd))
+        parsed-output (wrapped-sh props argv)]
+    (when print-cmd? (println "$" (str/join " " argv)))
     (when print-output? (println ">" parsed-output))
     parsed-output))
 
@@ -42,7 +61,7 @@
                   [:cat [:map [:dir :string]]]
                   [:maybe :string]]}
   [{:keys [dir]}]
-  (->> (herdr "pane list")
+  (->> (herdr "pane" "list")
        :result
        :panes
        (filter (fn [{:keys [cwd]}]
@@ -71,7 +90,7 @@
 
 (defn label->workspace-id
   [props]
-  (->> (herdr "workspace list")
+  (->> (herdr "workspace" "list")
        :result
        :workspaces
        (filter #(= (->workspace-label props) (:label %)))
@@ -85,7 +104,7 @@
   [{:keys [dir] :as props}]
   (if-let [workspace-id (label->workspace-id props)]
     workspace-id
-    (do (herdr "workspace create"
+    (do (herdr "workspace" "create"
                "--cwd" dir
                "--label" (->workspace-label props))
         (label->workspace-id props))))
@@ -93,12 +112,12 @@
 (defn tab->pane-id
   [props]
   (let [workspace-id (->workspace-id! props)
-        tab-id (->> (herdr "tab list --workspace" workspace-id)
+        tab-id (->> (herdr "tab" "list" "--workspace" workspace-id)
                     :result :tabs
                     (filter #(= (->tab-label props) (:label %)))
                     first
                     :tab_id)
-        pane-id (->> (herdr "pane list --workspace" workspace-id)
+        pane-id (->> (herdr "pane" "list" "--workspace" workspace-id)
                      :result :panes
                      (filter #(= tab-id (:tab_id %)))
                      first
@@ -112,7 +131,7 @@
   [{:keys [dir] :as props}]
   (if-let [pane-id (tab->pane-id props)]
     pane-id
-    (do (herdr "tab create"
+    (do (herdr "tab" "create"
                "--workspace" (->workspace-id! props)
                "--cwd" dir
                "--label" (->tab-label props)
@@ -135,7 +154,9 @@
    [:agent-name :string]
    [:agent-kind {:optional true
                  :default "claude"} :string]
-   [:agent-opts {:optional true} :string]])
+   ;; a string is tokenized like a shell command line;
+   ;; a vector is passed as argv elements, untouched
+   [:agent-opts {:optional true} [:or :string [:vector :string]]]])
 
 (def coerce-agent-props
   (ma/coercer AgentProps (mt/transformer
@@ -151,21 +172,26 @@
     (if-let [pane-id (agent-name->pane-id props)]
       pane-id
       (let [pane-id (tab->pane-id! props)]
-        (herdr "agent start" agent-name
+        (herdr "agent" "start" agent-name
                "--pane"      pane-id
                "--kind"      agent-kind
                "--"
-               (when agent-opts
-                 agent-opts))
+               (cond-> agent-opts
+                 (string? agent-opts) bp/tokenize))
         (agent-name->pane-id props)))))
+
+(defn close-workspace!
+  [props]
+  (when-let [workspace-id (label->workspace-id props)]
+    (herdr "workspace" "close" workspace-id)))
 
 (defn close-all
   []
-  (->> (herdr "workspace list")
+  (->> (herdr "workspace" "list")
        :result
        :workspaces
        (run! (fn [{:keys [workspace_id]}]
-               (herdr "workspace close" workspace_id)))))
+               (herdr "workspace" "close" workspace_id)))))
 
 (defn ->input-prompt
   [text]
@@ -185,7 +211,7 @@
 (defn ensure-agent-prompt-sent!
   [agent-name]
   (loop [i 0]
-    (let [{text :result} (herdr "agent read" agent-name)]
+    (let [{text :result} (herdr "agent" "read" agent-name)]
       (when (or (not (->blank-input-prompt? text))
                 (< i 10))
         (herdr "agent" "send-keys" agent-name "enter")
@@ -201,7 +227,6 @@
                   [:map]]}
   [{:keys [agent-name ensure-prompt-sent?] :as props} prompt]
   (agent-name->pane-id! props)
-  (herdr "agent prompt" agent-name
-         (pr-str prompt))
+  (herdr "agent" "prompt" agent-name prompt)
   (when ensure-prompt-sent?
     (ensure-agent-prompt-sent! agent-name)))
