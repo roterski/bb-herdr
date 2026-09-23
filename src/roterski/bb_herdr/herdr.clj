@@ -8,6 +8,19 @@
 
 (def ^:dynamic *props* {:print-cmd? true})
 
+(defn wrapped-sh [props args]
+  (let [{:keys [exit out err]} (bp/sh props args)
+        success? (zero? exit)
+        output (if success?
+                 out
+                 err)]
+    (merge {:success? success?}
+           (try
+             (j/read-value output j/keyword-keys-object-mapper)
+             (catch Exception _e
+               (println out err)
+               {:result output})))))
+
 (defn herdr
   [& args]
   (let [[props cmds] (if (map? (first args))
@@ -18,19 +31,8 @@
                  (remove str/blank?)
                  (str/join " ")
                  (str "herdr "))
-        {:keys [extra-env print-cmd? print-output?]} (merge *props*
-                                                            props)
-        {:keys [exit out err]} (bp/sh {:extra-env extra-env} cmd)
-        success? (zero? exit)
-        output (if success?
-                 out
-                 err)
-        parsed-output (merge {:success? success?}
-                             (try
-                               (j/read-value output j/keyword-keys-object-mapper)
-                               (catch Exception _e
-                                 (println out err)
-                                 {:result output})))]
+        {:keys [print-cmd? print-output?]} (merge *props* props)
+        parsed-output (wrapped-sh props cmd)]
     (when print-cmd? (println "$" cmd))
     (when print-output? (println ">" parsed-output))
     parsed-output))
