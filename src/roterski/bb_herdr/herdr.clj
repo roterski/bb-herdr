@@ -1,7 +1,7 @@
 (ns roterski.bb-herdr.herdr
   (:require [roterski.bb-herdr.utils :refer [join-lines]]
             [babashka.process :as bp]
-            [jsonista.core :as j]
+            [cheshire.core :as json]
             [clojure.string :as str]
             [malli.core :as ma]
             [malli.transform :as mt]))
@@ -18,7 +18,7 @@
                  err)]
     (merge {:success? success?}
            (try
-             (j/read-value output j/keyword-keys-object-mapper)
+             (json/parse-string output true)
              (catch Exception _e
                (println out err)
                {:result output})))))
