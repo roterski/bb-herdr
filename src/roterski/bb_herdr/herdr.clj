@@ -8,10 +8,25 @@
 
 (def ^:dynamic *props* {:print-cmd? true})
 
+(defn- sh
+  "Like `bp/sh`, plus `:timeout-ms` in `props`: a process still running after
+   that long is destroyed, with its descendants, and the call throws
+   ex-info {:herdr/timeout true :argv argv :timeout-ms timeout-ms}.
+   Without it, waits for the process however long it runs."
+  [{:keys [timeout-ms] :as props} argv]
+  (let [proc   (apply bp/process (merge {:out :string :err :string} props) argv)
+        result (if timeout-ms (deref proc timeout-ms ::timed-out) @proc)]
+    (if (= ::timed-out result)
+      (do (bp/destroy-tree proc)
+          (throw (ex-info (str "herdr timed out after " timeout-ms " ms: " (str/join " " argv))
+                          {:herdr/timeout true :argv argv :timeout-ms timeout-ms})))
+      result)))
+
 (defn wrapped-sh
-  "Runs `argv` (a vector, passed to the process as-is) and parses its JSON output."
+  "Runs `argv` (a vector, passed to the process as-is) via `sh` and parses its
+   JSON output."
   [props argv]
-  (let [{:keys [exit out err]} (apply bp/sh props argv)
+  (let [{:keys [exit out err]} (sh props argv)
         success? (zero? exit)
         output (if success?
                  out
@@ -22,6 +37,19 @@
              (catch Exception _e
                (println out err)
                {:result output})))))
+
+^:rct/test
+(comment
+  ;; a process outliving :timeout-ms is destroyed, and the call throws
+  (let [start (System/currentTimeMillis)
+        data  (try (wrapped-sh {:timeout-ms 300} ["sleep" "30"])
+                   (catch clojure.lang.ExceptionInfo e (ex-data e)))]
+    [(:herdr/timeout data) (:argv data) (< (- (System/currentTimeMillis) start) 5000)])
+  ;;=> [true ["sleep" "30"] true]
+  ;; within the bound it behaves as without one
+  (:success? (wrapped-sh {:timeout-ms 5000} ["echo" "{}"]))
+  ;;=> true
+  )
 
 (defn cmds->herdr-args
   "A single string is a command line, tokenized like a shell would (a leading
@@ -44,17 +72,18 @@
 
 (defn herdr
   "Runs herdr with the args described in `cmds->herdr-args`. An optional
-   leading map holds babashka.process opts plus :print-cmd?/:print-output?."
+   leading map holds babashka.process opts plus :print-cmd?/:print-output? and
+   :timeout-ms (see `sh`), merged over `*props*`."
   [& args]
   (let [[props cmds] (if (map? (first args))
                        [(first args) (rest args)]
                        [{} args])
-        argv (into ["herdr"] (cmds->herdr-args cmds))
-        {:keys [print-cmd? print-output?]} (merge *props* props)
-        parsed-output (wrapped-sh props argv)]
+        {:keys [print-cmd? print-output?] :as props} (merge *props* props)
+        argv (into ["herdr"] (cmds->herdr-args cmds))]
     (when print-cmd? (println "$" (str/join " " argv)))
-    (when print-output? (println ">" parsed-output))
-    parsed-output))
+    (let [parsed-output (wrapped-sh props argv)]
+      (when print-output? (println ">" parsed-output))
+      parsed-output)))
 
 (defn dir->pane-id
   {:malli/schema [:=>
