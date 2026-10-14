@@ -23,20 +23,19 @@
       result)))
 
 (defn wrapped-sh
-  "Runs `argv` (a vector, passed to the process as-is) via `sh` and parses its
-   JSON output."
   [props argv]
   (let [{:keys [exit out err]} (sh props argv)
         success? (zero? exit)
         output (if success?
                  out
-                 err)]
+                 err)
+        parsed (try (json/parse-string output true)
+                    (catch Exception _e ::not-json))]
     (merge {:success? success?}
-           (try
-             (json/parse-string output true)
-             (catch Exception _e
-               (println out err)
-               {:result output})))))
+           (if (map? parsed)
+             parsed
+             (do (println out err)
+                 {:result output})))))
 
 ^:rct/test
 (comment
@@ -49,6 +48,15 @@
   ;; within the bound it behaves as without one
   (:success? (wrapped-sh {:timeout-ms 5000} ["echo" "{}"]))
   ;;=> true
+  ;; a JSON object is merged in
+  (wrapped-sh {} ["echo" "{\"result\": {\"type\": \"ok\"}}"])
+  ;;=> {:success? true :result {:type "ok"}}
+  ;; plain text is the result
+  (wrapped-sh {} ["printf" "Welcome back"])
+  ;;=> {:success? true :result "Welcome back"}
+  ;; so is text that parses as another JSON value
+  (wrapped-sh {} ["printf" "\n  3 \n"])
+  ;;=> {:success? true :result "\n  3 \n"}
   )
 
 (defn cmds->herdr-args
